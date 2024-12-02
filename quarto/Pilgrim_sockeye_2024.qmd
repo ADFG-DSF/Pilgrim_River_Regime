@@ -1,0 +1,311 @@
+---
+title: "Pilgrim River Sockeye"
+author: "Adam Reimer"
+format:
+  html:
+    self-contained: true
+editor: visual
+---
+
+## Motivation
+
+The motivation for this analysis was the poor standard Ricker fit by the escapement goal shiny app. This was reflected by the large value for sigma but seemingly contradicted by an OYP which reached 100% for a large range of escapements. Perhaps this should not be surprising since the OYP accounts for estimation error and not for process error. I still found it unsatisfactory and used this as a case study to try a different model which might be better able to account for large variability in realized recruitment. This model likely has large future utility for ADF&G as it allows us to directly account for time-varying productivity in the escapement goal setting process while utilizing all available data.
+
+## Regime Transition Ricker Model and Analysis
+
+The regime transition Ricker model is a conditional mixture model which assumes production in the system is governed by two spawner-recruit relationships. The transition between regimes is modeled as a Markov process where state transition probabilities are estimated from the data and the prior. By treating occupancy in each productivity state across time as a 1st-order Markov process, successive states are conditional on the state of the previous brood year. Transition probabilities from this model can be used to simulate future regime occupancy, and likely recruitment and yield of the composite (i.e. for a stock whose recruitment is a result of broods produced under both regimes). The technical details of the model and escapement goal analysis is specified in a [report](https://www.bbsri.org/_files/ugd/bc10d6_7f130c433ecb4dc983a9456ed0154097.pdf) prepared for the Bristol Bay Science and Research Institute (pages 8 -13).
+
+The analysis described in the linked report were followed closely with the following exceptions. An order was enforced on the productivity $\text{ log(}\alpha\text{)}$, density dependence $\beta$, and process error $\sigma$ parameters such that one regime was more productive with less density dependence and less process error while the other regime was less productive with more density dependence and more process error... i.e$\text{ log(}\alpha_1\text{)}>\text{ log(}\alpha_2\text{)}$, $\beta_1 < \beta_2$ and $\sigma_1 < \sigma_2$. In addition, $\sigma_1$ had a informative prior $~gamma(5, 15)$ which encouraged the model to estimate transitions between regimes over larger process error. Lastly, moderately informative priors were used for transition probabilities $\pi_{1.}\text{~}ddirchelet(13, 2)$ and $\pi_{2.}\text{~}ddirchelet(2, 4)$ which were estimated empirically from the brood table (i.e. there were 13 brood years which were subjectively graded as "high productivity" two of which were followed by a "low productivity" brood years and 4 "low productivity" brood years 2 of which were followed by "high productivity" brood years. Informative priors can be a controversial topic but were used judiciously in this case to ensure two regimes could be faithfully estimated. The resultant Ricker curves for each regime appeared to be modestly influenced by changes to these assumptions. JAGS was used to generate MCMC samples over 5 chains were run for 15K iterations, with a 5K burn-in. One fifth of the samples were thinned and kept for evaluation. Gelman-Rubin test statistics were used to ensure convergence.
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| include: FALSE
+packs <- c("tidyverse", "mgcv", "knitr")
+lapply(packs, require, character.only = TRUE)
+
+brood <- readxl::read_xlsx("..\\data\\brood_table.xlsx", sheet = 2)
+
+data <- 
+  list(
+    S = brood$S,
+    R = brood$R, 
+    ar1 = 0,
+    kf = 0,
+    nyrs = length(brood$S),
+    d = 4
+)
+
+post <- readRDS("../post.rds")
+```
+
+All continuous brood years (17 total) were used in this analysis. I recall staff felt it was appropriate to omit the first few years in the shiny analysis although I don't recall why.
+
+```{r}
+#| echo: FALSE
+#| label: tbl-brood
+#| tab-cap: "The Pilgrim River sockeye brood table used in this analysis"
+kable(brood)
+```
+
+The median Ricker relationship estimated under each regime can be shown in @fig-Ricker. Median Ricker relationships are consistent with the analysis conducted using the shiny app and perhaps appropriate since there is no commercial fishery to necessitate accurate forecasts of future yield. Large estimated process error (in either analysis, see @tbl-params) mean forecasts of future yield would be sensitive to this choice. While these relationships could be thought reasonably approximated by the shiny apps time-varying productivity model note that this model does not imply a single shift in production. This assumption may be more appropriate given the large run and escapement observed in 2024.
+
+```{r}
+#| echo: FALSE
+#| fig.height: 6
+#| fig.width: 7
+#| label: fig-Ricker
+#| fig-cap: "Pilgrim River sockeye Ricker curves showing median recruitment for the high (green) and low (orange) productivity regimes. Text labels associated with each observed recruitment is the probability that each brood year resulted from the low productivity regime."
+plot(1:90000, 
+     1:90000*exp(post$q50$lnalpha[1])*exp(-post$q50$beta[1]/10^4*1:90000), 
+     type = "l", 
+     col = "green", 
+     ylim = c(0, 7e4), 
+     xlab = "S", 
+     ylab = "R")
+lines(1:90000, 1:90000*exp(post$q50$lnalpha[2])*exp(-post$q50$beta[2]/10^4*1:90000),
+      col = "orange")
+abline(0,1)
+points(data$S, data$R)
+text(data$S, data$R + 2500, round(post$mean$lambda_1, digits = 2))
+```
+
+To gain a intuition into how the regime transition model functions take a look at the numbers presented in @fig-Ricker. The 2005, 2008, and 2015-17 brood are the most likely to have resulted from the "low productivity" regime. That said all broods have some probability of resulting from either regime and while 3-5 broods were most commonly attributed to the "low productivity" regime there were simulation steps which utilized either all or none of the broods to estimate both relationships (@fig-regime).
+
+```{r}
+#| echo: FALSE
+#| fig.height: 6
+#| fig.width: 7
+#| label: fig-regime
+#| fig-cap: "Distribution of the number of brood years used to estimate the high and low productivity Ricker relationships for Pilgrim River sockeye across 15,000 MCMC iterations."
+membership <- 
+  post$sims.list$lambda_1 %>% 
+    rowSums() %>% 
+    as.data.frame() %>% 
+    setNames("R2") %>%
+    mutate(R1 = 17 - R2) 
+par(mfrow = c(2, 1))
+hist(membership$R1, xlab = "# of broods from the high productivity regime", main = NULL)
+hist(membership$R2, xlab = "# of broods from the low productivity regime", main = NULL)
+par(mfrow = c(1, 1))
+```
+
+Perhaps not surprisingly the estimates of productivity $\text{ log(}\alpha\text{)}$, density dependence $\beta$, and process error $\sigma$ from the shiny app are middling compared to the estimate for each regime.
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| label: tbl-params
+#| tbl-cap: "Pilgrim River sockeye salmon spawner recruit parameter estimates for each productivity regime."
+draw <- sample(1:dim(post$sims.list$lnalpha)[1],
+               size = 1000,
+               replace = FALSE)
+
+#draw pi
+sims_pi <- list(pi = post$sims.list$pi[draw, , ])
+stationary_pi <- list()
+stationary_pi$pi <- array(NA, dim(sims_pi$pi))
+for(i in 1:dim(sims_pi$pi)[1]){
+  stationary_pi$pi[i,,] <- 
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,] %*%
+    sims_pi$pi[i,,]
+}
+# head(stationary_pi$pi)
+# apply(stationary_pi$pi, MARGIN = c(2:3), median)
+# head(sims_pi$pi)
+
+#function to simulate future regimes
+get_regime <- function(sample, sims){
+  regime <- 
+    data.frame(
+      year = 1:100,
+      rand = runif(100, 0, 1),
+      phi_11 = rep(diag(sims$pi[sample,,])[1], 100),
+      phi_22 = rep(diag(sims$pi[sample,,])[2], 100),
+      regime = c(sample(1:2, 1, prob = c(12/17, 5/17)), rep(NA, 99)))
+  
+  for(i in 2:100){
+    if(regime$regime[i - 1] == 1){
+      if(regime$rand[i] <= regime$phi_11[i]){regime$regime[i] = 1}
+      else{regime$regime[i] = 2}
+      }
+    else{
+      if(regime$rand[i] <= regime$phi_22[i]){regime$regime[i] = 2}
+      else{regime$regime[i] = 1}
+    }
+  }
+  as.integer(regime$regime)
+}
+
+#draw lnalpha, beta and sigma and format to join regime dataframe
+sims_lnalpha <-
+  data.frame(sample = 1:1000,
+             lnalpha = post$sims.list$lnalpha[draw, ]) %>%
+  pivot_longer(cols = starts_with("lnalpha"), 
+               names_to = "regime", 
+               names_prefix = "lnalpha.", 
+               values_to = "lnalpha") %>%
+  mutate(regime = as.integer(regime))
+
+sims_beta <-
+  data.frame(sample = 1:1000,
+             beta = post$sims.list$beta[draw, ]) %>%
+  pivot_longer(cols = starts_with("beta"), 
+               names_to = "regime", 
+               names_prefix = "beta.", 
+               values_to = "beta") %>%
+  mutate(regime = as.integer(regime))
+
+sims_sigma <-
+  data.frame(sample = 1:1000,
+             sigma = post$sims.list$sigma[draw, ]) %>%
+  pivot_longer(cols = starts_with("sigma"), 
+               names_to = "regime", 
+               names_prefix = "sigma.", 
+               values_to = "sigma") %>%
+  mutate(regime = as.integer(regime))
+
+# summary(post) %>% 
+#   as.data.frame() %>% 
+#   rownames_to_column() %>%
+#   filter(!grepl("lambda", rowname), rowname != "deviance") %>%
+#   select("Parameter" = "rowname", "median" = "50%", "lower CI" = "2.5%", "upper CI" = "97.5%")
+
+sims_lnalpha %>%
+  left_join(sims_beta, by = c("sample", "regime")) %>%
+  left_join(sims_sigma, by = c("sample", "regime")) %>%
+  mutate(Smsy = lnalpha / (beta / 10^data$d) * (0.5 - 0.07 * lnalpha),
+         Smax = 1 / (beta / 10^data$d),
+         Seq = lnalpha / (beta / 10^data$d)) %>%
+  pivot_longer(c(lnalpha, beta, sigma, Smsy, Smax, Seq), names_to = "parameter", values_to = "value") %>%
+  group_by(regime, parameter) %>%
+  summarise(median = median(value),
+            'lower 90% CI' = quantile(value, 0.05),
+            'upper 90% CI' = quantile(value, 0.95)) %>% 
+  kable(digits = 2)
+```
+
+```{r}
+#| echo: FALSE
+#| include: FALSE
+
+#create a dataframe with 100 years of future regimes for each 1000 samples
+regimes <- 
+  lapply(1:1000, function(x){
+    data.frame(sample = x, year = 1:100, regime = get_regime(x, stationary_pi))
+    }) %>%
+  do.call(rbind, .) 
+
+#join with appropriate SR parameter estimates to give SR parameter estimates 
+# by sample and year after accounting for regime membership 
+SRdata <- 
+  regimes %>%
+  left_join(sims_lnalpha, by = c("sample", "regime")) %>%
+  left_join(sims_beta, by = c("sample", "regime")) %>%
+  left_join(sims_sigma, by = c("sample", "regime")) %>%
+  mutate(epsilon = exp(rnorm(n(), 0, sigma))) 
+
+#Calculate yield and recruitment for a wide range of S across samples and years
+#R_epsilon and Y_epsilon used to estimate EG range using simulation and GLMM fit.
+#Rp, Yp, Smsy_p, MSY_p, OYP_90_p for mean based OYP
+#R, Y, Smsy, MSY, OYP_90 for median based OYP
+est_Y <-
+  SRdata %>%
+  slice(rep(1:n(), each = 100)) %>%
+  mutate(lnalpha_p = lnalpha + sigma * sigma / 2,
+         S = rep(seq(400, 40000, length.out = 100), times = 100 * 1000), #2),
+         R = S * exp(lnalpha - beta / 10^data$d * S),
+         Rp = S * exp(lnalpha_p - beta / 10^data$d * S),
+         R_epsilon = R * epsilon,
+         Y = R - S,
+         Yp = Rp - S,
+         Y_epsilon = R_epsilon - S,
+         Smsy = lnalpha / (beta / 10^data$d) * (0.5 - 0.07 * lnalpha),
+         Smsy_p = lnalpha_p / (beta / 10^data$d) * (0.5 - 0.07 * lnalpha_p),
+         MSY = Smsy * exp(lnalpha - beta / 10^data$d * Smsy) - Smsy,
+         MSY_p = Smsy_p * exp(lnalpha - beta / 10^data$d * Smsy_p) - Smsy_p,
+         OYP_90 = ifelse(Y > 0.9 * MSY, 1, 0),
+         OYP_90_p = ifelse(Yp > 0.9 * MSY_p, 1, 0),
+         Smax = 1 / (beta / 10^data$d),
+         MSR = Smax * exp(lnalpha - beta / 10^data$d * Smax),
+         ORP_90 = ifelse(R > 0.9 * MSR, 1, 0))
+
+# OYP ---------------------------------------------------------------------
+#Smsy quantiles
+# est_Y %>%
+#   group_by(regime) %>%
+#   summarize(min_Smsy = min(Smsy),
+#             q10_Smsy = quantile(Smsy, 0.05),
+#             q50_Smsy = quantile(Smsy, 0.5),
+#             q90_Smsy = quantile(Smsy, 0.95),
+#             max_Smsy = max(Smsy))
+
+est_OYP_regime <- 
+  est_Y %>%
+  group_by(regime, S) %>%
+  summarise(Y_mean = mean(Y),
+            Yp_mean = mean(Yp),
+            Y_mean_epsilon = mean(Y_epsilon),
+            Y_median = median(Y),
+            Y_median_epsilon = median(Y_epsilon),
+            Y_10 = quantile(Y, 0.1),
+            Y_90 = quantile(Y, 0.9),
+            R_mean = mean(R),
+            R_median = median(R),
+            OYP_90 = mean(OYP_90),
+            OYP_90_p = mean(OYP_90_p),
+            ORP_90 = mean(ORP_90))
+
+est_OYP <- 
+  est_Y %>%
+  group_by(S) %>%
+  summarise(Y_mean = mean(Y),
+            Yp_mean = mean(Yp),
+            Y_mean_epsilon = mean(Y_epsilon),
+            Y_median = median(Y),
+            Y_median_epsilon = median(Y_epsilon),
+            Y_10 = quantile(Y, 0.1),
+            Y_90 = quantile(Y, 0.9),
+            R_mean = mean(R),
+            R_median = median(R),
+            OYP_90 = mean(OYP_90),
+            OYP_90_p = mean(OYP_90_p),
+            ORP_90 = mean(ORP_90))
+
+#OYP prob at shiny app lb
+OYP_6400 <- est_OYP[est_OYP$S == 6400, ]$OYP_90
+OYP_6400_regime <- est_OYP_regime[est_OYP_regime$S == 6400, ][, c("regime", "OYP_90")]
+OYP_6400_regime[OYP_6400_regime$regime == 2, "OYP_90"]
+```
+
+Optimal yield profiles associated with this analysis indicate there is no escapement which delivers a 90% probability of achieving 90% of MSY. The escapement goal range produced by the shiny app is not unreasonable at the lower bound but this analysis suggests we will be less likely to achieve 90% of MSY (`{r} round(OYP_6400, 2)`). A lower bound of 6,400 fish has a `{r} round(OYP_6400_regime[OYP_6400_regime$regime == 1, "OYP_90"], 2)` probability of achieving 90% of MSY during broods governed by regime 1 and a `{r} round(OYP_6400_regime[OYP_6400_regime$regime == 2, "OYP_90"], 2)` probability of achieving 90% of MSY during broods governed by regime 2.
+
+```{r}
+#| echo: FALSE
+#| fig.height: 5
+#| fig.width: 7
+#| label: fig-OYP
+#| fig-cap: "Optimal yieled profiles for Pilgrim River sockeye salmon in productivity regimes 1 (green) and 2 (yellow) and combined (black). The shaded area represents 6,400 - 11,300 fish"
+# OYP median --------------------------------------------------------------
+plot(est_OYP$S, est_OYP$OYP_90, 
+     type = "l", 
+     ylim = c(0, 1), xlab = "S", ylab = "Prob(Y > 0.9 * MSY)")
+abline(h = 0.9, col = "red")
+#SR shiny app goal (Y median)
+rect(6400, 0, 11300, 1,
+     border = NA,
+     col = rgb(red = 0, green = 0.5, blue = 0, alpha = 0.2))
+lines(est_OYP_regime$S[est_OYP_regime$regime == 1], 
+      est_OYP_regime$OYP_90[est_OYP_regime$regime == 1], col = "green")
+lines(est_OYP_regime$S[est_OYP_regime$regime == 2], 
+      est_OYP_regime$OYP_90[est_OYP_regime$regime == 2], col = "orange")
+```
