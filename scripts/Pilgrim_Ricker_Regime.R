@@ -496,7 +496,7 @@ lines(est_OYP_regime$S[est_OYP_regime$regime == 2],
 
 #Sustained yield plot each analysis type
 #Note Y gives mean, Yp gives median as verified by simulation
-#mean or median of Y negligable difference
+#mean or median of Y negligible difference
 plot(est_OYP$S, 
      est_OYP$Y_mean, 
      ylim = c(0, 60000),
